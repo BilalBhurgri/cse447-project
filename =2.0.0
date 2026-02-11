@@ -1,0 +1,30 @@
+Collecting torch
+  Downloading torch-2.10.0-2-cp313-none-macosx_11_0_arm64.whl.metadata (31 kB)
+Requirement already satisfied: filelock in ./venv/lib/python3.13/site-packages (from torch) (3.20.3)
+Requirement already satisfied: typing-extensions>=4.10.0 in ./venv/lib/python3.13/site-packages (from torch) (4.15.0)
+Collecting setuptools (from torch)
+  Downloading setuptools-82.0.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting sympy>=1.13.3 (from torch)
+  Using cached sympy-1.14.0-py3-none-any.whl.metadata (12 kB)
+Collecting networkx>=2.5.1 (from torch)
+  Downloading networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+Collecting jinja2 (from torch)
+  Using cached jinja2-3.1.6-py3-none-any.whl.metadata (2.9 kB)
+Requirement already satisfied: fsspec>=0.8.5 in ./venv/lib/python3.13/site-packages (from torch) (2026.2.0)
+Collecting mpmath<1.4,>=1.1.0 (from sympy>=1.13.3->torch)
+  Using cached mpmath-1.3.0-py3-none-any.whl.metadata (8.6 kB)
+Collecting MarkupSafe>=2.0 (from jinja2->torch)
+  Downloading markupsafe-3.0.3-cp313-cp313-macosx_11_0_arm64.whl.metadata (2.7 kB)
+Downloading torch-2.10.0-2-cp313-none-macosx_11_0_arm64.whl (79.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.5/79.5 MB 36.9 MB/s  0:00:02
+Downloading networkx-3.6.1-py3-none-any.whl (2.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 32.8 MB/s  0:00:00
+Using cached sympy-1.14.0-py3-none-any.whl (6.3 MB)
+Using cached mpmath-1.3.0-py3-none-any.whl (536 kB)
+Using cached jinja2-3.1.6-py3-none-any.whl (134 kB)
+Downloading markupsafe-3.0.3-cp313-cp313-macosx_11_0_arm64.whl (12 kB)
+Downloading setuptools-82.0.0-py3-none-any.whl (1.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.0/1.0 MB 21.0 MB/s  0:00:00
+Installing collected packages: mpmath, sympy, setuptools, networkx, MarkupSafe, jinja2, torch
+
+Successfully installed MarkupSafe-3.0.3 jinja2-3.1.6 mpmath-1.3.0 networkx-3.6.1 setuptools-82.0.0 sympy-1.14.0 torch-2.10.0
