@@ -5,6 +5,10 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from tqdm import tqdm
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+import os
+
+# ERROR FIXING
+from datasets import load_dataset
 
 
 class TextDataset(Dataset):
@@ -55,12 +59,34 @@ class MyModel:
         self.model.to(self.device)
 
     @classmethod
-    def load_training_data(cls, data_path='data/train.txt'):
-        pass
+    def load_training_data(cls, data_path):
+        all_texts = []
+
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"{data_path} not found")
+
+        # Walk recursively through directory
+        for root, dirs, files in os.walk(data_path):
+            for file in files:
+                if file.endswith(".arrow"):
+                    file_path = os.path.join(root, file)
+                    print(f"Loading {file_path}")
+
+                    dataset = load_dataset(
+                        "arrow",
+                        data_files=file_path
+                    )["train"]
+                    if "text" not in dataset.column_names:
+                        raise ValueError(f"No 'text' column in {file_path}")
+
+                    all_texts.extend(dataset["text"])
+
+        return all_texts
 
     @classmethod
     def load_test_data(cls, fname):
-        pass
+        with open(fname, 'r', encoding='utf-8') as f:
+            return [line.strip() for line in f if line.strip()]
 
     @classmethod
     def write_pred(cls, preds, fname):
@@ -227,8 +253,18 @@ if __name__ == '__main__':
         model = MyModel(model_name=args.model_name)
         
         print('Loading training data from {}'.format(args.train_data))
-        train_data = MyModel.load_training_data(args.train_data)
-        
+        data_dir = "data"
+
+        fleurs_dirs = [
+            os.path.join(data_dir, d)
+            for d in os.listdir(data_dir)
+            if os.path.isdir(os.path.join(data_dir, d))
+            and d.startswith("fleurs")
+        ]
+        # Traverse over all language arrow files and add them to train data
+        train_data = []
+        for f_dir in fleurs_dirs:
+            train_data.extend(MyModel.load_training_data(f_dir))
         if train_data:
             print('Training model...')
             model.run_train(
@@ -250,7 +286,6 @@ if __name__ == '__main__':
         
         print('Loading test data from {}'.format(args.test_data))
         test_data = MyModel.load_test_data(args.test_data)
-        
         print('Making predictions')
         pred = model.run_pred(test_data)
         
