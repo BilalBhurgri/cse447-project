@@ -16,7 +16,6 @@ class CharTransformer(nn.Module):
         nhead = 8
         num_layers = 6
         dim_feedforward = 1024
-        dropout = 0.1
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Embedding(seq_len, d_model)
@@ -25,7 +24,6 @@ class CharTransformer(nn.Module):
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
-            dropout=dropout,
             activation="gelu",
             batch_first=True
         )
@@ -196,12 +194,16 @@ class MyModel:
         return CharDataset(chunks)
 
 
-    def run_train(self, texts, work_dir, epochs=10, batch_size=64, lr=2e-4):
+    def run_train(self, texts, work_dir, epochs=30, batch_size=64, lr=2e-4):
 
         dataset = self._create_dataset(texts)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=lr,
+            weight_decay=0.01
+        )
         criterion = nn.CrossEntropyLoss()
 
         for epoch in range(epochs):
