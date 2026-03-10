@@ -1,62 +1,74 @@
 #!/usr/bin/env python
 import os
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
 from tqdm import tqdm
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-import os
-
-# ERROR FIXING
 from datasets import load_dataset
+import unicodedata
 
+class CharTransformer(nn.Module):
+    def __init__(self, vocab_size, seq_len=512):
+        super().__init__()
 
-class TextDataset(Dataset):
-    def __init__(self, texts, tokenizer, max_length=128):
-        self.tokenizer = tokenizer
-        self.examples = []
-        
-        print(f'Processing {len(texts)} text samples...')
-        for text in tqdm(texts, desc="Tokenizing"):
-            encoded = tokenizer(
-                text,
-                truncation=True,
-                max_length=max_length,
-                padding='max_length',
-                return_tensors='pt'
-            )
-            self.examples.append({
-                'input_ids': encoded['input_ids'].squeeze(),
-                'attention_mask': encoded['attention_mask'].squeeze()
-            })
-    
-    def __len__(self):
-        return len(self.examples)
-    
-    def __getitem__(self, idx):
-        item = self.examples[idx]
-        return {
-            'input_ids': item['input_ids'],
-            'attention_mask': item['attention_mask'],
-            'labels': item['input_ids']
-        }
+        d_model = 384
+        nhead = 8
+        num_layers = 6
+        dim_feedforward = 1024
+        dropout = 0.1
+
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_embedding = nn.Embedding(seq_len, d_model)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers
+        )
+
+        self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
+        self.lm_head.weight = self.token_embedding.weight  # weight tying
+
+        mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+        self.register_buffer("causal_mask", mask)
+
+    def forward(self, x):
+        B, T = x.size()
+        positions = torch.arange(T, device=x.device).unsqueeze(0)
+
+        x = self.token_embedding(x) + self.pos_embedding(positions)
+        mask = self.causal_mask[:T, :T]
+
+        x = self.transformer(x, mask=mask)
+        return self.lm_head(x)
+
 
 
 class MyModel:
-    def __init__(self, model_name='gpt2'):
-        self.model_name = model_name
-        self.tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-        self.model = GPT2LMHeadModel.from_pretrained(model_name)
-        
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-    
+    def __init__(self, texts=None, seq_len=256):
+
+        self.seq_len = seq_len
         self.device = torch.device(
-            'cuda' if torch.cuda.is_available() 
-            else 'mps' if torch.backends.mps.is_available() 
-            else 'cpu'
+            "cuda" if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available()
+            else "cpu"
         )
-        print(f'Using device: {self.device}')
-        self.model.to(self.device)
+
+        if texts is not None and len(texts) > 0:
+            self._build_vocab(texts)
+            self._build_model()
+            self.model.to(self.device)
+
+        print(f"Using device: {self.device}")
 
     @classmethod
     def load_training_data(cls, data_path):
@@ -65,7 +77,35 @@ class MyModel:
         if not os.path.exists(data_path):
             raise FileNotFoundError(f"{data_path} not found")
 
-        # Walk recursively through directory
+        for file in os.listdir(data_path):
+            if file.endswith(".txt"):
+                file_path = os.path.join(data_path, file)
+                print(f"Loading {file_path}")
+
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        # Normalize text
+                        line = unicodedata.normalize("NFKC", line)
+
+                        all_texts.append(line)
+
+        if len(all_texts) == 0:
+            raise ValueError("No .txt files found in data directory")
+
+        print(f"Loaded {len(all_texts)} text examples")
+        return all_texts
+
+    @classmethod
+    def load_training_data_arrow(cls, data_path):
+        all_texts = []
+
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"{data_path} not found")
+
         for root, dirs, files in os.walk(data_path):
             for file in files:
                 if file.endswith(".arrow"):
@@ -76,9 +116,9 @@ class MyModel:
                         "arrow",
                         data_files=file_path
                     )["train"]
+
                     if "text" not in dataset.column_names:
                         raise ValueError(f"No 'text' column in {file_path}")
-
                     all_texts.extend(dataset["text"])
 
         return all_texts
@@ -92,207 +132,209 @@ class MyModel:
     def write_pred(cls, preds, fname):
         with open(fname, 'wt', encoding='utf-8') as f:
             for p in preds:
-                f.write('{}\n'.format(p))
+                f.write(f"{p}\n")
 
-    def run_train(self, data, work_dir, epochs=3, batch_size=8, learning_rate=5e-5):
-        if not data:
-            print('No training data provided. Skipping training.')
-            return
-        
-        print(f'Starting training for {epochs} epochs...')
-        
-        dataset = TextDataset(data, self.tokenizer, max_length=128)
+
+    def _build_vocab(self, texts):
+        chars = set()
+        for text in texts:
+            chars.update(text)
+
+        self.pad_token = "<PAD>"
+        self.unk_token = "<UNK>"
+
+        self.chars = [self.pad_token, self.unk_token] + sorted(chars)
+        self.stoi = {ch: i for i, ch in enumerate(self.chars)}
+        self.itos = {i: ch for ch, i in self.stoi.items()}
+        self.vocab_size = len(self.chars)
+
+        print(f"Vocab size: {self.vocab_size}")
+
+    def encode(self, text):
+        return [self.stoi.get(ch, self.stoi[self.unk_token]) for ch in text]
+
+    def _build_model(self):
+        self.model = CharTransformer(self.vocab_size, self.seq_len)
+
+
+    def _create_dataset(self, texts):
+        import random
+
+        all_ids = []
+        for text in texts:
+            all_ids.extend(self.encode(text))
+
+        if len(all_ids) < self.seq_len + 1:
+            raise ValueError(
+                f"Dataset too small. Need at least {self.seq_len+1} characters, "
+                f"but got {len(all_ids)}"
+            )
+
+        num_chunks = len(all_ids) // self.seq_len
+        chunks = []
+
+        for _ in range(num_chunks):
+            start = random.randint(0, len(all_ids) - self.seq_len - 1)
+            chunk = all_ids[start:start+self.seq_len+1]
+            chunks.append(chunk)
+
+        print(f"Created {len(chunks)} training sequences")
+
+        class CharDataset(Dataset):
+            def __init__(self, data):
+                self.data = data
+
+            def __len__(self):
+                return len(self.data)
+
+            def __getitem__(self, idx):
+                chunk = self.data[idx]
+                x = torch.tensor(chunk[:-1], dtype=torch.long)
+                y = torch.tensor(chunk[1:], dtype=torch.long)
+                return x, y
+
+        return CharDataset(chunks)
+
+
+    def run_train(self, texts, work_dir, epochs=10, batch_size=64, lr=2e-4):
+
+        dataset = self._create_dataset(texts)
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=learning_rate)
-        
-        self.model.train()
+
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr)
+        criterion = nn.CrossEntropyLoss()
+
         for epoch in range(epochs):
+            self.model.train()
             total_loss = 0
-            progress_bar = tqdm(dataloader, desc=f'Epoch {epoch+1}/{epochs}')
-            
-            for batch in progress_bar:
-                try:
-                    input_ids = batch['input_ids'].to(self.device)
-                    attention_mask = batch['attention_mask'].to(self.device)
-                    labels = batch['labels'].to(self.device)
-                    
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels
-                    )
-                    loss = outputs.loss
-                    
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    
-                    total_loss += loss.item()
-                    progress_bar.set_postfix({'loss': f'{loss.item():.4f}'})
-                    
-                except Exception as e:
-                    print(f'Error in batch: {e}')
-                    continue
-            
-            avg_loss = total_loss / len(dataloader)
-            print(f'Epoch {epoch+1} - Average Loss: {avg_loss:.4f}')
-        
-        print('Training complete!')
+
+            for x, y in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
+
+                x, y = x.to(self.device), y.to(self.device)
+                logits = self.model(x)
+
+                loss = criterion(
+                    logits.view(-1, self.vocab_size),
+                    y.view(-1)
+                )
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                optimizer.step()
+
+                total_loss += loss.item()
+
+            print(f"Epoch {epoch+1} | Loss: {total_loss/len(dataloader):.4f}")
+
+        self.save(work_dir)
+
 
     def predict_next_chars(self, text, top_k=3):
         self.model.eval()
-        
-        try:
-            inputs = self.tokenizer(text, return_tensors='pt').to(self.device)
-            
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                logits = outputs.logits[0, -1, :]
-            
-            probs = torch.softmax(logits, dim=-1)
-            top_token_ids = torch.topk(probs, k=min(100, len(probs))).indices
-            
-            seen_chars = set()
-            top_chars = []
-            
-            for token_id in top_token_ids:
-                token_str = self.tokenizer.decode([token_id.item()])
-                
-                if token_str and len(token_str) > 0:
-                    first_char = token_str[0]
-                    
-                    if first_char not in seen_chars:
-                        seen_chars.add(first_char)
-                        top_chars.append(first_char)
-                        
-                        if len(top_chars) == top_k:
-                            break
-            
-            common_chars = [' ', 'e', 't', 'a', 'o', 'i', 'n']
-            for char in common_chars:
-                if len(top_chars) >= top_k:
-                    break
-                if char not in seen_chars:
-                    top_chars.append(char)
-            
-            while len(top_chars) < top_k:
-                top_chars.append(' ')
-            
-            return top_chars[:top_k]
-            
-        except Exception as e:
-            print(f'Error predicting for text "{text}": {e}')
-            return [' ', 'e', 't']
 
-    def run_pred(self, data, batch_size=32):
-        print(f'Generating predictions for {len(data)} samples...')
-        self.model.eval()
-        
+        encoded = self.encode(text)[-self.seq_len:]
+        x = torch.tensor(encoded, dtype=torch.long).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            logits = self.model(x)
+            probs = torch.softmax(logits[0, -1], dim=-1)
+
+            # Remove whitespace predictions
+            for ch in [" ", "\n", "\t", "\r"]:
+                if ch in self.stoi:
+                    probs[self.stoi[ch]] = 0.0
+
+        probs = probs / probs.sum()
+        top_ids = torch.topk(probs, k=top_k).indices.tolist()
+        return [self.itos[i] for i in top_ids]
+                
+
+    def run_pred(self, data):
         preds = []
-        
-        for inp in tqdm(data, desc='Predicting'):
-            top_chars = self.predict_next_chars(inp, top_k=3)
-            preds.append(''.join(top_chars))
-        
+        for text in tqdm(data, desc="Predicting"):
+            chars = self.predict_next_chars(text, top_k=3)
+            preds.append("".join(chars))
         return preds
 
+
     def save(self, work_dir):
-        print(f'Saving model to {work_dir}...')
-        model_path = os.path.join(work_dir, 'model')
-        self.model.save_pretrained(model_path)
-        self.tokenizer.save_pretrained(model_path)
-        print('Model saved successfully!')
+        os.makedirs(work_dir, exist_ok=True)
+        torch.save({
+            "model_state": self.model.state_dict(),
+            "stoi": self.stoi,
+            "itos": self.itos,
+            "vocab_size": self.vocab_size,
+            "seq_len": self.seq_len
+        }, os.path.join(work_dir, "model_20k.pt"))
+        print("Model saved.")
 
     @classmethod
     def load(cls, work_dir):
-        model_path = os.path.join(work_dir, 'model')
-        
-        if not os.path.exists(model_path):
-            print(f'Warning: No trained model found at {model_path}')
-            print('Using base GPT-2 model without fine-tuning.')
-            return cls(model_name='gpt2')
-        
-        print(f'Loading model from {model_path}...')
-        model = cls.__new__(cls)
-        model.tokenizer = GPT2Tokenizer.from_pretrained(model_path)
-        model.model = GPT2LMHeadModel.from_pretrained(model_path)
-        
-        model.device = torch.device(
-            'cuda' if torch.cuda.is_available() 
-            else 'mps' if torch.backends.mps.is_available() 
-            else 'cpu'
+        checkpoint = torch.load(
+            os.path.join(work_dir, "model_20k.pt"),
+            map_location="cpu"
         )
-        print(f'Using device: {model.device}')
+
+        model = cls(texts=[], seq_len=checkpoint["seq_len"])
+
+        model.stoi = checkpoint["stoi"]
+        model.itos = checkpoint["itos"]
+        model.vocab_size = checkpoint["vocab_size"]
+
+        model.pad_token = "<PAD>"
+        model.unk_token = "<UNK>"
+
+        model._build_model()
+        model.model.load_state_dict(checkpoint["model_state"])
         model.model.to(model.device)
         model.model.eval()
-        
+
         return model
 
-
 if __name__ == '__main__':
+
     parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.add_argument('mode', choices=('train', 'test'), help='what to run')
-    parser.add_argument('--work_dir', help='where to save', default='work')
-    parser.add_argument('--train_data', help='path to training data', default='data/train.txt')
-    parser.add_argument('--test_data', help='path to test data', default='example/input.txt')
-    parser.add_argument('--test_output', help='path to write test predictions', default='pred.txt')
-    parser.add_argument('--epochs', type=int, help='number of training epochs', default=3)
-    parser.add_argument('--batch_size', type=int, help='batch size', default=8)
-    parser.add_argument('--learning_rate', type=float, help='learning rate', default=5e-5)
-    parser.add_argument('--model_name', help='GPT-2 model variant', 
-                       choices=['gpt2', 'gpt2-medium', 'gpt2-large'], default='gpt2')
+    parser.add_argument('mode', choices=('train', 'test'))
+    parser.add_argument('--work_dir', default='work')
+    parser.add_argument('--test_data', default='example/input.txt')
+    parser.add_argument('--test_output', default='pred.txt')
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--batch_size', type=int, default=64)
     args = parser.parse_args()
 
     if args.mode == 'train':
-        if not os.path.isdir(args.work_dir):
-            print('Making working directory {}'.format(args.work_dir))
-            os.makedirs(args.work_dir)
-        
-        print(f'Instantiating {args.model_name} model')
-        model = MyModel(model_name=args.model_name)
-        
-        print('Loading training data from {}'.format(args.train_data))
+
         data_dir = "data"
 
-        fleurs_dirs = [
-            os.path.join(data_dir, d)
-            for d in os.listdir(data_dir)
-            if os.path.isdir(os.path.join(data_dir, d))
-            and d.startswith("fleurs")
-        ]
-        # Traverse over all language arrow files and add them to train data
-        train_data = []
-        for f_dir in fleurs_dirs:
-            train_data.extend(MyModel.load_training_data(f_dir))
-        if train_data:
-            print('Training model...')
-            model.run_train(
-                train_data, 
-                args.work_dir, 
-                epochs=args.epochs, 
-                batch_size=args.batch_size,
-                learning_rate=args.learning_rate
-            )
-            print('Saving model')
-            model.save(args.work_dir)
-        else:
-            print('No training data found. Saving base model.')
-            model.save(args.work_dir)
-            
+        # fleurs_dirs = [
+        #     os.path.join(data_dir, d)
+        #     for d in os.listdir(data_dir)
+        #     if os.path.isdir(os.path.join(data_dir, d))
+        #     and d.startswith("fleurs")
+        # ]
+
+        # train_texts = []
+        # for f_dir in fleurs_dirs:
+        #     train_texts.extend(MyModel.load_training_data(f_dir))
+        train_texts = MyModel.load_training_data(data_dir)
+
+        model = MyModel(texts=train_texts)
+        model.run_train(
+            train_texts,
+            args.work_dir,
+            epochs=args.epochs,
+            batch_size=args.batch_size
+        )
+
     elif args.mode == 'test':
-        print('Loading model')
+
         model = MyModel.load(args.work_dir)
-        
-        print('Loading test data from {}'.format(args.test_data))
         test_data = MyModel.load_test_data(args.test_data)
-        print('Making predictions')
-        pred = model.run_pred(test_data)
-        
-        print('Writing predictions to {}'.format(args.test_output))
-        assert len(pred) == len(test_data), 'Expected {} predictions but got {}'.format(len(test_data), len(pred))
-        model.write_pred(pred, args.test_output)
-        print('Done!')
-        
-    else:
-        raise NotImplementedError('Unknown mode {}'.format(args.mode))
+
+        preds = model.run_pred(test_data)
+
+        assert len(preds) == len(test_data)
+        MyModel.write_pred(preds, args.test_output)
+
+        print("Done.")
