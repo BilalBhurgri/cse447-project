@@ -16,14 +16,21 @@ class CharTransformer(nn.Module):
         nhead = 8
         num_layers = 6
         dim_feedforward = 1024
+        dropout = 0.03
 
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.pos_embedding = nn.Embedding(seq_len, d_model)
+
+        # improves stability
+        self.embed_ln = nn.LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=dropout,
             activation="gelu",
             batch_first=True
         )
@@ -34,22 +41,41 @@ class CharTransformer(nn.Module):
         )
 
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
-        self.lm_head.weight = self.token_embedding.weight  # weight tying
+
+        # weight tying
+        self.lm_head.weight = self.token_embedding.weight
 
         mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
         self.register_buffer("causal_mask", mask)
 
+        self._init_weights()
+
+    def _init_weights(self):
+        for module in self.modules():
+
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+
+            elif isinstance(module, nn.Embedding):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(self, x):
         B, T = x.size()
+
         positions = torch.arange(T, device=x.device).unsqueeze(0)
 
         x = self.token_embedding(x) + self.pos_embedding(positions)
+
+        x = self.embed_ln(x)
+        x = self.dropout(x)
+
         mask = self.causal_mask[:T, :T]
 
         x = self.transformer(x, mask=mask)
+
         return self.lm_head(x)
-
-
 
 class MyModel:
     def __init__(self, texts=None, seq_len=256):
@@ -156,27 +182,17 @@ class MyModel:
 
 
     def _create_dataset(self, texts):
-        import random
+        sequences = []
 
-        all_ids = []
         for text in texts:
-            all_ids.extend(self.encode(text))
+            ids = self.encode(text)
+            stride = self.seq_len // 4
 
-        if len(all_ids) < self.seq_len + 1:
-            raise ValueError(
-                f"Dataset too small. Need at least {self.seq_len+1} characters, "
-                f"but got {len(all_ids)}"
-            )
+            for i in range(0, len(ids) - self.seq_len - 1, stride):
+                chunk = ids[i:i+self.seq_len+1]
+                sequences.append(chunk)
 
-        num_chunks = len(all_ids) // self.seq_len
-        chunks = []
-
-        for _ in range(num_chunks):
-            start = random.randint(0, len(all_ids) - self.seq_len - 1)
-            chunk = all_ids[start:start+self.seq_len+1]
-            chunks.append(chunk)
-
-        print(f"Created {len(chunks)} training sequences")
+        print(f"Created {len(sequences)} training sequences")
 
         class CharDataset(Dataset):
             def __init__(self, data):
@@ -191,9 +207,7 @@ class MyModel:
                 y = torch.tensor(chunk[1:], dtype=torch.long)
                 return x, y
 
-        return CharDataset(chunks)
-
-
+        return CharDataset(sequences)
     def run_train(self, texts, work_dir, epochs=30, batch_size=64, lr=2e-4):
 
         dataset = self._create_dataset(texts)

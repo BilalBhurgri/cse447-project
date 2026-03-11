@@ -7,7 +7,7 @@ wiki_languages = [
     "pt", "ru", "ur", "id", "de", "ja", "sw", "mr"
 ]
 
-num_examples = 1000
+num_examples = 5000
 chunk_size = 1024
 
 output_dir = Path("data")
