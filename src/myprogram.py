@@ -315,7 +315,7 @@ if __name__ == '__main__':
     parser.add_argument('--work_dir', default='work')
     parser.add_argument('--test_data', default='example/input.txt')
     parser.add_argument('--test_output', default='pred.txt')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=64)
     args = parser.parse_args()
 
